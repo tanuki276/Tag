@@ -1,6 +1,6 @@
 import numpy as np
 from collections import defaultdict
-from pkg.schema.models import Action
+from pkg.schema.models import Intent, Priority, ActionType
 from pkg.engine.pathfinder import Pathfinder
 
 class ActionResolver:
@@ -33,7 +33,12 @@ class ActionResolver:
         self._finalize_actions(state, status_updates, skill_executed)
 
         return {
-            a_id: Action(target_pos=pos, status_update=status_updates[a_id])
+            a_id: Intent(
+                target_pos=pos,
+                priority=intents[a_id].priority,
+                action_type=intents[a_id].action_type,
+                metadata=status_updates[a_id]
+            )
             for a_id, pos in final_positions.items()
         }
 
@@ -49,11 +54,11 @@ class ActionResolver:
 
     def _resolve_movement_collision(self, sorted_ids, intents, state, status_updates, planned_paths):
         final_positions = {}
-        occupied = {tuple(a.pos) for a in state.actor_data.values() if a.alive and not a.escaped}
-        
+        occupied = {tuple(a.pos) for a in state.actor_data.values() if a.alive and not getattr(a, 'escaped', False)}
+
         for a_id in sorted_ids:
             actor = state.actor_data[a_id]
-            if not actor.alive or actor.escaped:
+            if not actor.alive or getattr(actor, 'escaped', False):
                 continue
 
             current_pos = tuple(actor.pos)
@@ -63,7 +68,7 @@ class ActionResolver:
             target_pos = tuple(intents[a_id].target_pos)
             speed = 2 if status_updates[a_id].get("asclepius_active") or \
                         getattr(actor, 'asclepius_active', False) else 1
-            
+
             if current_pos == target_pos:
                 path = [current_pos]
             else:
@@ -77,7 +82,7 @@ class ActionResolver:
             final_positions[a_id] = list(final_pos)
             planned_paths[a_id] = path
             occupied.add(final_pos)
-            
+
         return final_positions
 
     def _resolve_combat_refined(self, final_positions, state, planned_paths, status_updates):
@@ -92,7 +97,8 @@ class ActionResolver:
             h_path = [tuple(p) for p in planned_paths.get(h_id, [])]
             for o_id in onis:
                 o_path = [tuple(p) for p in planned_paths.get(o_id, [])]
-                if not h_path or not o_path: continue
+                if not h_path or not o_path: 
+                    continue
 
                 collision = False
                 if h_path[-1] == o_path[-1]:
@@ -112,7 +118,7 @@ class ActionResolver:
     def _prepare_skills(self, intents, state, status_updates):
         executed = set()
         for a_id, intent in intents.items():
-            if intent.action == "ASCLEPIUS":
+            if getattr(intent, 'action_type', None) == ActionType.SKILL and getattr(intent, 'metadata', {}).get('skill_name') == "ASCLEPIUS":
                 actor = state.actor_data[a_id]
                 if getattr(actor, 'mp_charge', 0) >= 1000:
                     executed.add(a_id)
@@ -136,9 +142,10 @@ class ActionResolver:
         for a_id, pos in final_positions.items():
             if status_updates[a_id].get('alive') is False:
                 continue
-            
+
             pos_tuple = tuple(pos)
-            if pos_tuple in taken_items: continue
+            if pos_tuple in taken_items: 
+                continue
 
             item = state.grid_items.get(pos_tuple)
             if item:
