@@ -10,6 +10,7 @@ class RandomManager:
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
+            self.seed = seed
 
     def get_state(self):
         return {
