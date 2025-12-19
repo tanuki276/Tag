@@ -14,26 +14,27 @@ class Oni(BaseActor):
 
     def decide(self, view):
         if self.confused > 0:
-            self.confused -= 1
             return self._logic_confused(view)
 
         grid = view.memory.get("grid_map")
+        if grid is None:
+            return Intent(target_pos=self.pos, priority=0, metadata={})
+
         finder = Pathfinder(grid)
-        
         target_pos = self._select_best_target(view)
-        
+
         if target_pos:
-            self.target_last_pos = target_pos
-            path = finder.get_path(self.pos, target_pos)
-            next_pos = path[1] if len(path) > 1 else self.pos
+            self.target_last_pos = tuple(target_pos)
+            path = finder.get_path(self.pos, self.target_last_pos)
+            next_pos = tuple(path[1]) if len(path) > 1 else self.pos
             return self._create_intent(next_pos, priority_boost=5)
 
         if self.target_last_pos:
-            if self.pos == self.target_last_pos:
+            if tuple(self.pos) == self.target_last_pos:
                 self.target_last_pos = None
             else:
                 path = finder.get_path(self.pos, self.target_last_pos)
-                next_pos = path[1] if len(path) > 1 else self.pos
+                next_pos = tuple(path[1]) if len(path) > 1 else self.pos
                 return self._create_intent(next_pos)
 
         return self._create_intent(self._get_patrol_move(grid))
@@ -43,32 +44,40 @@ class Oni(BaseActor):
         if body_targets:
             return min(body_targets, key=lambda p: self._dist(self.pos, p))
 
-        visible_humans = [a for a in view.actors if not a["is_oni"] and a["alive"] and not a.get("invincible")]
+        visible_humans = [
+            a for a in view.actors 
+            if not a.get("is_oni") and a.get("alive") and not a.get("invincible")
+        ]
         if visible_humans:
             target = min(visible_humans, key=lambda h: self._dist(self.pos, h["pos"]))
             return target["pos"]
-        
+
         return None
 
     def _logic_confused(self, view):
-        other_onis = [a for a in view.actors if a["is_oni"] and a["a_id"] != self.a_id]
+        other_onis = [a for a in view.actors if a.get("is_oni") and a.get("a_id") != self.a_id]
         if other_onis:
-            target = random.choice(other_onis)["pos"]
-            return Intent(target_pos=target, priority=40)
-        return Intent(target_pos=self.pos, priority=0)
+            target = tuple(random.choice(other_onis)["pos"])
+            return Intent(target_pos=target, priority=40, metadata={})
+        return Intent(target_pos=self.pos, priority=0, metadata={})
 
     def _get_patrol_move(self, grid):
-        h, w = grid.shape
-        for _ in range(10):
-            pt = (random.randint(0, h-1), random.randint(0, w-1))
-            if grid[pt] == 0: return pt
-        return self.pos
+        walkable = np.where(grid == 0)
+        if len(walkable[0]) == 0:
+            return self.pos
+        idx = random.randint(0, len(walkable[0]) - 1)
+        return (int(walkable[0][idx]), int(walkable[1][idx]))
 
     def _dist(self, p1, p2):
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
 
     def _create_intent(self, target_pos, priority_boost=0):
-        priority = self.config["entities"]["oni"]["move_priority"] + priority_boost
-        if random.random() < self.config["entities"]["oni"]["dash_chance"]:
+        oni_cfg = self.config["entities"]["oni"]
+        priority = oni_cfg["move_priority"] + priority_boost
+        if random.random() < oni_cfg.get("dash_chance", 0.0):
             priority += 5
-        return Intent(target_pos=target_pos, priority=priority)
+        return Intent(
+            target_pos=tuple(target_pos), 
+            priority=priority, 
+            metadata={"ignore_walls": False}
+        )
