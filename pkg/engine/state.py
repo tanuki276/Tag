@@ -1,52 +1,60 @@
-import numpy as np
-
 class WorldState:
-    def __init__(self, config, grid, actors, map_elements):
-        self.config = config
+    def __init__(self, grid, actor_data, map_elements, config):
         self.grid = grid
-        self.actor_data = actors
+        self.actor_data = actor_data
         self.map_elements = map_elements
+        self.config = config
         self.turn = 0
         self.is_terminal = False
         self.termination_reason = ""
+        self.exit_open = False
+        self.exit_pos = tuple(config["world"]["exit_pos"])
 
     def apply(self, resolved_actions):
-        for a_id, action in resolved_actions.items():
-            actor = self.actor_data[a_id]
-            if action.target_pos is not None:
-                actor.prev_pos = actor.pos
-                actor.pos = action.target_pos
-            
-            if hasattr(action, 'status_update'):
-                for attr, val in action.status_update.items():
-                    setattr(actor, attr, val)
-        
         self.turn += 1
+
+        for a_id, actor in self.actor_data.items():
+            action = resolved_actions.get(a_id)
+            if action:
+                actor.commit_status(action.target_pos, action.status_update)
+            actor.tick()
+
         self._check_termination()
         return self
 
     def _check_termination(self):
         humans = [a for a in self.actor_data.values() if not a.is_oni]
-        alive_humans = [h for h in humans if h.alive and not h.escaped]
         
-        if not alive_humans:
+        if self.exit_open:
+            for h in humans:
+                if h.alive and not h.escaped and tuple(h.pos) == self.exit_pos:
+                    h.escaped = True
+
+        total_humans = len(humans)
+        escaped_humans = [h for h in humans if h.escaped]
+        alive_not_escaped = [h for h in humans if h.alive and not h.escaped]
+        dead_humans = [h for h in humans if not h.alive]
+
+        if not alive_not_escaped:
             self.is_terminal = True
-            self.termination_reason = "ALL_HUMANS_ELIMINATED"
-        elif self.turn >= self.config["world"]["max_turns"]:
+            e_count = len(escaped_humans)
+            
+            if e_count == total_humans:
+                self.termination_reason = "PERFECT_ESCAPE"
+            elif e_count > 0:
+                self.termination_reason = f"PARTIAL_ESCAPE_AND_DEATH (Escaped:{e_count}, Dead:{len(dead_humans)})"
+            else:
+                self.termination_reason = "TOTAL_ANNIHILATION"
+            return
+
+        if self.turn >= self.config["world"]["max_turns"]:
             self.is_terminal = True
             self.termination_reason = "MAX_TURNS_REACHED"
-        elif any(h.escaped for h in humans) and self.config["game_rules"].get("escape_enabled"):
-            if len([h for h in humans if h.escaped]) == len(humans):
-                self.is_terminal = True
-                self.termination_reason = "ALL_HUMANS_ESCAPED"
 
-    def export_step_result(self, intents, resolved_actions):
-        from pkg.schema.models import StepResult
-        return StepResult(
-            turn=self.turn,
-            is_terminal=self.is_terminal,
-            termination_reason=self.termination_reason,
-            intents=intents,
-            actions=resolved_actions,
-            snapshot={a_id: a.get_public_status() for a_id, a in self.actor_data.items()}
-        )
+    def get_summary(self):
+        return {
+            "turn": self.turn,
+            "alive": len([a for a in self.actor_data.values() if a.alive and not a.escaped]),
+            "escaped": len([a for a in self.actor_data.values() if a.escaped]),
+            "terminal": self.is_terminal
+        }
