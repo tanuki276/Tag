@@ -7,22 +7,21 @@ class InformationMediator:
 
     def get_local_views(self, state):
         alive_actors = [a for a in state.actor_data.values() if a.alive and not a.escaped]
-        
-        views = {}
-        for actor in alive_actors:
-            views[actor.a_id] = self._build_view(actor, state, alive_actors)
-        return views
+        return {
+            actor.a_id: self._build_view(actor, state, alive_actors)
+            for actor in alive_actors
+        }
 
     def _build_view(self, actor, state, all_alive_actors):
-        v_range = actor.vision_range
-        if actor.stamina < 10:
+        v_range = getattr(actor, 'vision_range', 5)
+        if getattr(actor, 'stamina', 100) < 10:
             v_range = max(1, v_range // 2)
 
         visible_actors = [
             other.get_public_status() for other in all_alive_actors
             if other.a_id != actor.a_id and self._is_visible(actor.pos, other.pos, v_range, state.grid)
         ]
-        
+
         visible_elements = [
             (pos, el) for pos, el in state.map_elements.items()
             if self._is_visible(actor.pos, pos, v_range, state.grid)
@@ -39,8 +38,12 @@ class InformationMediator:
         )
 
     def _is_visible(self, p1, p2, v_range, grid):
-        if (abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])) > v_range:
+        p1 = tuple(map(int, p1))
+        p2 = tuple(map(int, p2))
+        
+        if (abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])) > v_range:
             return False
+            
         return not self._has_wall_between(p1, p2, grid)
 
     def _has_wall_between(self, p1, p2, grid):
@@ -56,9 +59,11 @@ class InformationMediator:
         dy *= 2
 
         for _ in range(n):
-            if grid[int(y), int(x)] == 1:
-                if (int(y), int(x)) != p1 and (int(y), int(x)) != p2:
-                    return True
+            if 0 <= y < grid.shape[0] and 0 <= x < grid.shape[1]:
+                if grid[y, x] == 1:
+                    if (y, x) != p1 and (y, x) != p2:
+                        return True
+            
             if error > 0:
                 x += x_inc
                 error -= dy
@@ -68,18 +73,19 @@ class InformationMediator:
         return False
 
     def inject_learning(self, state, resolved_actions):
-        alive_humans = [a for a in state.actor_data.values() if not a.is_oni and a.alive]
-        
-        for a_id, actor in state.actor_data.items():
-            if actor.is_oni:
-                for h in alive_humans:
-                    if self._is_visible(actor.pos, h.pos, actor.vision_range, state.grid):
-                        actor.memory.update_prediction(h.a_id, h.pos)
+        onis = [a for a in state.actor_data.values() if getattr(a, 'is_oni', False) and a.alive]
+        humans = [a for a in state.actor_data.values() if not getattr(a, 'is_oni', False) and a.alive]
+
+        for oni in onis:
+            v_range = getattr(oni, 'vision_range', 5)
+            for h in humans:
+                if self._is_visible(oni.pos, h.pos, v_range, state.grid):
+                    oni.memory.update_prediction(h.a_id, h.pos)
 
         self._process_oracle_transmission(state)
 
     def _process_oracle_transmission(self, state):
-        active_oracles = [a for a in state.actor_data.values() if a.dream_mode > 0]
+        active_oracles = [a for a in state.actor_data.values() if getattr(a, 'dream_mode', 0) > 0]
         if not active_oracles:
             return
 
@@ -88,7 +94,9 @@ class InformationMediator:
             if el.type.name == "KEY" and el.properties.get("identified")
         }
 
-        if identified_keys:
-            for h in state.actor_data.values():
-                if not h.is_oni and h.alive:
-                    h.memory.known_elements.update(identified_keys)
+        if not identified_keys:
+            return
+
+        for h in state.actor_data.values():
+            if not getattr(h, 'is_oni', False) and h.alive:
+                h.memory.known_elements.update(identified_keys)
