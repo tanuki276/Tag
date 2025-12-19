@@ -22,14 +22,18 @@ class InformationMediator:
             (pos, el) for pos, el in state.map_elements.items()
             if self._is_visible(actor.pos, pos, v_range, state.grid)
         ]
-        return LocalView(pos=actor.pos, actors=visible_actors, elements=visible_elements, memory=actor.memory.get_relevant(state.turn))
+        return LocalView(
+            pos=actor.pos, 
+            actors=visible_actors, 
+            elements=visible_elements, 
+            memory=actor.memory.get_relevant(state.turn)
+        )
 
     def _is_visible(self, p1, p2, v_range, grid):
         if (abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])) > v_range: return False
         return not self._has_wall_between(p1, p2, grid)
 
     def _has_wall_between(self, p1, p2, grid):
-        # Bresenham-like line algorithm for LOS
         x0, y0 = p1
         x1, y1 = p2
         dx, dy = abs(x1-x0), abs(y1-y0)
@@ -41,11 +45,18 @@ class InformationMediator:
         dx *= 2
         dy *= 2
         for _ in range(n):
-            if grid[x, y] == 1 and (x, y) != p1 and (x, y) != p2: return True
-            if error > 0: x += x_inc; error -= dy
-            else: y += y_inc; error += dx
+            if grid[int(x), int(y)] == 1:
+                # 始点と終点そのものが壁である場合は除外しない
+                if (int(x), int(y)) != p1 and (int(x), int(y)) != p2:
+                    return True
+            if error > 0:
+                x += x_inc
+                error -= dy
+            else:
+                y += y_inc
+                error += dx
         return False
 
     def inject_learning(self, state, resolved_actions):
-        # Update Oni memory based on human movement patterns
+        # TODO: 鬼の適応学習ロジックの注入
         pass
