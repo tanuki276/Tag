@@ -46,7 +46,6 @@ class InformationMediator:
         dy *= 2
         for _ in range(n):
             if grid[int(x), int(y)] == 1:
-                # 始点と終点そのものが壁である場合は除外しない
                 if (int(x), int(y)) != p1 and (int(x), int(y)) != p2:
                     return True
             if error > 0:
@@ -58,5 +57,4 @@ class InformationMediator:
         return False
 
     def inject_learning(self, state, resolved_actions):
-        # TODO: 鬼の適応学習ロジックの注入
         pass
