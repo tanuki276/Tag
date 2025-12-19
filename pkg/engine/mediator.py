@@ -22,11 +22,15 @@ class InformationMediator:
             (pos, el) for pos, el in state.map_elements.items()
             if self._is_visible(actor.pos, pos, v_range, state.grid)
         ]
+        
+        mem = actor.memory.get_relevant(state.turn)
+        mem["grid_map"] = state.grid
+        
         return LocalView(
             pos=actor.pos, 
             actors=visible_actors, 
             elements=visible_elements, 
-            memory=actor.memory.get_relevant(state.turn)
+            memory=mem
         )
 
     def _is_visible(self, p1, p2, v_range, grid):
@@ -57,4 +61,11 @@ class InformationMediator:
         return False
 
     def inject_learning(self, state, resolved_actions):
-        pass
+        oni_memory_update = {}
+        for a_id, actor in state.actor_data.items():
+            if actor.is_oni:
+                for h_id, h_actor in state.actor_data.items():
+                    if not h_actor.is_oni and h_actor.alive:
+                        if h_id not in actor.memory.prediction_map:
+                            actor.memory.prediction_map[h_id] = []
+                        actor.memory.prediction_map[h_id].append(h_actor.pos)
