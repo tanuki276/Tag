@@ -16,9 +16,16 @@ class Human(BaseActor):
         self.exploration_map = None
         self.target_node = None
         self.stuck_counter = 0
+        
+        self.stamina = 100
+        self.max_stamina = 100
+        self.dash_cost = 10
+        self.walk_cost = 2
+        self.recover_rate = 5
 
     def decide(self, view):
         if self.stun > 0:
+            self._manage_stamina(0)
             return Intent(target_pos=self.pos, priority=0)
 
         grid = view.memory.get("grid_map")
@@ -26,44 +33,70 @@ class Human(BaseActor):
         self._update_knowledge(view, grid)
 
         onis = [a for a in view.actors if a.get("is_oni")]
+        
+        use_dash = len(onis) > 0 and self.stamina >= self.dash_cost
+        priority_base = self.config["entities"]["human"]["move_priority"]
+
         if onis:
-            self.target_node = None 
+            self.target_node = None
             oni_pos = [o["pos"] for o in onis]
-            next_pos = finder.get_safe_direction(self.pos, oni_pos, distance=8)
-            return Intent(target_pos=next_pos, priority=self.config["entities"]["human"]["move_priority"] + 5)
-
-        if self.known_exit:
+            target_pos = finder.get_safe_direction(self.pos, oni_pos, distance=8)
+            move_priority = priority_base + 10
+        elif self.known_exit:
             path = finder.get_path(self.pos, self.known_exit)
-            if len(path) > 1:
-                return Intent(target_pos=path[1], priority=self.config["entities"]["human"]["move_priority"] + 2)
+            target_pos = path[1] if len(path) > 1 else self.pos
+            move_priority = priority_base + 2
+        else:
+            visible_keys = [pos for pos, el in view.elements if "KEY" in el.type.name]
+            if visible_keys:
+                target_key = min(visible_keys, key=lambda p: abs(p[0]-self.pos[0]) + abs(p[1]-self.pos[1]))
+                path = finder.get_path(self.pos, target_key)
+                target_pos = path[1] if len(path) > 1 else self.pos
+                move_priority = priority_base + 1
+            else:
+                if not self.target_node or self.pos == self.target_node or self.stuck_counter > 5:
+                    self.target_node = self._select_next_frontier(grid)
+                    self.stuck_counter = 0
+                path = finder.get_path(self.pos, self.target_node)
+                target_pos = path[1] if len(path) > 1 else self.pos
+                move_priority = priority_base
 
-        visible_keys = [pos for pos, el in view.elements if "KEY" in el.type.name]
-        if visible_keys:
-            target_key = min(visible_keys, key=lambda p: abs(p[0]-self.pos[0]) + abs(p[1]-self.pos[1]))
-            path = finder.get_path(self.pos, target_key)
-            if len(path) > 1:
-                return Intent(target_pos=path[1], priority=self.config["entities"]["human"]["move_priority"] + 1)
+        if use_dash:
+            path_dash = finder.get_path(self.pos, target_pos)
+            if len(path_dash) > 2:
+                final_pos = path_dash[2]
+            elif len(path_dash) > 1:
+                final_pos = path_dash[1]
+            else:
+                final_pos = self.pos
+            self._manage_stamina(self.dash_cost)
+            move_priority += 5
+        else:
+            final_pos = target_pos
+            if final_pos != self.pos:
+                self._manage_stamina(self.walk_cost)
+            else:
+                self._manage_stamina(0)
 
-        if not self.target_node or self.pos == self.target_node or self.stuck_counter > 5:
-            self.target_node = self._select_next_frontier(grid)
-            self.stuck_counter = 0
+        if final_pos == self.prev_pos and final_pos != self.pos:
+            self.stuck_counter += 1
 
-        path = finder.get_path(self.pos, self.target_node)
-        if len(path) > 1:
-            next_pos = path[1]
-            if next_pos == self.prev_pos:
-                self.stuck_counter += 1
-            return Intent(target_pos=next_pos, priority=self.config["entities"]["human"]["move_priority"])
+        return Intent(
+            target_pos=final_pos, 
+            priority=move_priority,
+            metadata={"dash": use_dash, "stamina": self.stamina}
+        )
 
-        self.target_node = None
-        return Intent(target_pos=self.pos, priority=0)
+    def _manage_stamina(self, cost):
+        if cost > 0:
+            self.stamina = max(0, self.stamina - cost)
+        else:
+            self.stamina = min(self.max_stamina, self.stamina + self.recover_rate)
 
     def _update_knowledge(self, view, grid):
         if self.exploration_map is None:
             self.exploration_map = np.zeros_like(grid)
-        
         self.exploration_map[self.pos[0], self.pos[1]] += 1
-        
         for pos, el in view.elements:
             if el.type.name == "EXIT":
                 self.known_exit = pos
@@ -76,7 +109,6 @@ class Human(BaseActor):
             if grid[tx, ty] == 0:
                 score = self.exploration_map[tx, ty]
                 candidates.append(((tx, ty), score))
-        
         if not candidates:
             return self.pos
         return min(candidates, key=lambda x: x[1])[0]
