@@ -10,11 +10,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          
       - name: Install
         run: |
           pip install -e .
+          
       - name: Run
         run: python main.py
+        
+      - name: Create Video
+        run: |
+          ffmpeg -framerate 10 -i frames/frame_%03d.png -c:v libx264 -pix_fmt yuv420p -y result.mp4
+          
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-results
+          path: |
+            result.mp4
+            logs/
