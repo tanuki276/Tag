@@ -1,65 +1,61 @@
 from collections import defaultdict
 
 class ActionResolver:
-    def __init__(self, config: dict):
+    def __init__(self, config):
         self.config = config
 
-    def resolve(self, intents: dict, state: 'WorldState') -> dict:
+    def resolve(self, intents, state):
         resolved = {}
         target_map = defaultdict(list)
         
+        # Priority sort: Oni (High) > Human (Low)
         sorted_ids = sorted(
             intents.keys(), 
-            key=lambda x: (not state.actor_data[x].is_oni, intents[x].priority), 
+            key=lambda x: (state.actor_data[x].is_oni, intents[x].priority), 
             reverse=True
         )
 
         for a_id in sorted_ids:
             target_map[intents[a_id].target_pos].append(a_id)
 
-        occupied_positions = set(state.grid_walls)
+        occupied_positions = set(zip(*np.where(state.grid == 1)))
         
         for pos, a_ids in target_map.items():
             winner_id = a_ids[0]
-            winner_intent = intents[winner_id]
-            
             if pos in occupied_positions:
-                resolved[winner_id] = self._stay_action(winner_id, state)
+                resolved[winner_id] = self._create_action(state.actor_data[winner_id].pos)
                 continue
 
+            resolved[winner_id] = intents[winner_id]
+            
             if len(a_ids) > 1:
-                self._handle_conflict(winner_id, a_ids[1:], intents, resolved, state)
-            else:
-                resolved[winner_id] = winner_intent
-                
+                for loser_id in a_ids[1:]:
+                    if state.actor_data[winner_id].is_oni and not state.actor_data[loser_id].is_oni:
+                        resolved[loser_id] = self._create_action(None, {"alive": False})
+                    else:
+                        resolved[loser_id] = self._create_action(state.actor_data[loser_id].pos)
+            
             occupied_positions.add(pos)
 
-        self._check_intercepts(intents, resolved, state)
+        self._process_intercepts(intents, resolved, state)
         return resolved
 
-    def _handle_conflict(self, winner_id, losers, intents, resolved, state):
-        resolved[winner_id] = intents[winner_id]
-        for l_id in losers:
-            if state.actor_data[winner_id].is_oni and state.actor_data[l_id].is_human:
-                resolved[l_id] = self._death_action(l_id)
-            else:
-                resolved[l_id] = self._stay_action(l_id, state)
-
-    def _check_intercepts(self, intents, resolved, state):
-        for a_id, intent in intents.items():
-            if not state.actor_data[a_id].is_human:
-                continue
+    def _process_intercepts(self, intents, resolved, state):
+        onis = [a_id for a_id, a in state.actor_data.items() if a.is_oni]
+        humans = [a_id for a_id, a in state.actor_data.items() if not a.is_oni and a.alive]
+        
+        for h_id in humans:
+            h_intent = intents.get(h_id)
+            if not h_intent: continue
             
-            for o_id in [i for i in intents if state.actor_data[i].is_oni]:
-                if intent.target_pos == state.actor_data[o_id].pos and \
-                   intents[o_id].target_pos == state.actor_data[a_id].pos:
-                    resolved[a_id] = self._death_action(a_id)
+            for o_id in onis:
+                o_intent = intents.get(o_id)
+                if not o_intent: continue
+                
+                # Intercept logic: Cross-moving
+                if h_intent.target_pos == state.actor_data[o_id].pos and \
+                   o_intent.target_pos == state.actor_data[h_id].pos:
+                    resolved[h_id] = self._create_action(None, {"alive": False})
 
-    def _stay_action(self, a_id, state):
-        return type('Action', (), {'target_pos': state.actor_data[a_id].pos})
-
-    def _death_action(self, a_id):
-        return type('Action', (), {
-            'target_pos': None, 
-            'status_update': {'alive': False}
-        })
+    def _create_action(self, pos, status=None):
+        return type('Action', (), {'target_pos': pos, 'status_update': status if status else {}})
