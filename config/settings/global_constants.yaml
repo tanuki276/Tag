@@ -1,0 +1,29 @@
+world:
+  grid_size: 25
+  max_turns: 400
+  wall_density: 0.2
+  seed: null
+
+game_rules:
+  num_keys_needed: 5
+  total_keys_spawned: 16
+  fake_key_ratio: 0.5
+  identify_time: 3
+  escape_enabled: true
+
+entities:
+  human:
+    count: 8
+    vision_range: 6
+    initial_dolls: 1
+    doll_relief_turns: 6
+    base_mp: 60
+    move_priority: 1
+  oni:
+    count: 3
+    vision_range: 11
+    base_speed: 1
+    dash_chance: 0.85
+    move_priority: 10
+
+balance_mode: "DRUG_ADJUSTED"
