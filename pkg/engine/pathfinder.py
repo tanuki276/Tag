@@ -13,16 +13,36 @@ class Pathfinder:
         path = self._astar(s, g)
         return path[1] if len(path) > 1 else s
 
+    def has_los(self, start, end):
+        y0, x0 = start
+        y1, x1 = end
+        dy, dx = abs(y1 - y0), abs(x1 - x0)
+        sy = 1 if y0 < y1 else -1
+        sx = 1 if x0 < x1 else -1
+        err = dx - dy
+        curr_y, curr_x = y0, x0
+        while (curr_y, curr_x) != (y1, x1):
+            if not (0 <= curr_y < self.height and 0 <= curr_x < self.width):
+                return False
+            if self.grid[curr_y, curr_x] == 1:
+                return False
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                curr_x += sx
+            if e2 < dx:
+                err += dx
+                curr_y += sy
+        return True
+
     def _astar(self, start, goal):
         if not (0 <= goal[0] < self.height and 0 <= goal[1] < self.width) or self.grid[goal] == 1:
             return [start]
-
         oheap = [(0, start)]
         came_from = {}
         g_score = {start: 0}
         close_set = set()
         c1, c2 = 1.0, 1.414
-
         while oheap:
             _, current = heapq.heappop(oheap)
             if current == goal:
@@ -113,12 +133,13 @@ class ActionResolver:
                 if not collision and len(h_p) > 1 and len(o_p) > 1:
                     if h_p[0] == o_p[1] and h_p[1] == o_p[0]: collision = True
                 if collision:
-                    if getattr(h_actor, 'has_doll', False):
-                        status_updates[h_id]['has_doll'] = False
-                        final_positions[h_id] = list(h_p[0])
-                    else:
-                        status_updates[h_id]['alive'] = False
-                        final_positions[h_id] = list(h_p[0])
+                    if self.pathfinder.has_los(h_p[0], o_p[0]):
+                        if getattr(h_actor, 'has_doll', False):
+                            status_updates[h_id]['has_doll'] = False
+                            final_positions[h_id] = list(h_p[0])
+                        else:
+                            status_updates[h_id]['alive'] = False
+                            final_positions[h_id] = list(h_p[0])
                     break
 
     def _prepare_skills(self, intents, state, status_updates):
@@ -129,8 +150,9 @@ class ActionResolver:
                 if getattr(actor, 'mp_charge', 0) >= 1000:
                     executed.add(a_id)
                     for t_id, t_a in state.actor_data.items():
-                        if not t_a.is_oni and (abs(actor.pos[0]-t_a.pos[0])+abs(actor.pos[1]-t_a.pos[1])) <= 10:
-                            status_updates[t_id].update({"asclepius_active": True, "asclepius_duration": 5, "stamina_rate": 0.3})
+                        if not t_a.is_oni and self.pathfinder.has_los(actor.pos, t_a.pos):
+                            if (abs(actor.pos[0]-t_a.pos[0])+abs(actor.pos[1]-t_a.pos[1])) <= 10:
+                                status_updates[t_id].update({"asclepius_active": True, "asclepius_duration": 5, "stamina_rate": 0.3})
         return executed
 
     def _finalize_actions(self, state, status_updates, skill_executed):
@@ -150,45 +172,3 @@ class ActionResolver:
                 elif item.type == "MP_POTION":
                     state.actor_data[a_id].mp_charge = min(state.actor_data[a_id].mp_charge + 500, 1000)
                     state.grid_items.pop(p)
-
-class WorldState:
-    def __init__(self, grid, actor_data, map_elements, config):
-        self.grid = grid
-        self.actor_data = actor_data
-        self.grid_items = map_elements.get("items", {})
-        self.config = config
-        self.turn, self.is_terminal, self.termination_reason = 0, False, ""
-        self.exit_open = False
-        self.exit_pos = tuple(config["world"]["exit_pos"])
-
-    def apply(self, resolved_actions):
-        self.turn += 1
-        for a_id, actor in self.actor_data.items():
-            action = resolved_actions.get(a_id)
-            if action: actor.commit_status(action.target_pos, action.status_update)
-            actor.tick()
-        self._check_exit_condition()
-        self._check_termination()
-        return self
-
-    def _check_exit_condition(self):
-        if not self.exit_open: return
-        for actor in self.actor_data.values():
-            if not actor.is_oni and actor.alive and not actor.escaped:
-                if tuple(actor.pos) == self.exit_pos: actor.escaped = True
-
-    def _check_termination(self):
-        humans = [a for a in self.actor_data.values() if not a.is_oni]
-        alive_not_escaped = [h for h in humans if h.alive and not h.escaped]
-        if not alive_not_escaped:
-            self.is_terminal = True
-            e_count = len([h for h in humans if h.escaped])
-            if e_count == len(humans): self.termination_reason = "PERFECT_ESCAPE"
-            elif e_count > 0: self.termination_reason = "PARTIAL_ESCAPE_AND_DEATH"
-            else: self.termination_reason = "TOTAL_ANNIHILATION"
-            return
-        if self.turn >= self.config["world"]["max_turns"]:
-            self.is_terminal, self.termination_reason = True, "MAX_TURNS_REACHED"
-
-    def get_summary(self):
-        return {"turn": self.turn, "terminal": self.is_terminal, "reason": self.termination_reason}
