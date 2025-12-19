@@ -1,0 +1,16 @@
+oni_adaptation:
+  learning_rate: 0.15
+  forgetting_factor: 0.9
+  latency_turns: 5
+  prediction_weight: 0.7
+  exploration_rate: 0.1
+
+human_adaptation:
+  pattern_shuffling_threshold: 0.6
+  random_move_chance: 0.3
+  fear_radius: 4
+  memory_retention_turns: 20
+
+meta_strategy:
+  enable_feedback_loop: true
+  update_interval: 10
