@@ -1,0 +1,16 @@
+map_generation:
+  algorithm: "CA"
+  smooth_iterations: 3
+  fill_probability: 0.45
+  min_room_size: 5
+
+spawn_logic:
+  mode: "CLUSTER"
+  human_cluster_radius: 3
+  min_dist_human_to_oni: 15
+  key_placement_padding: 2
+  exit_placement_margin: 5
+
+item_distribution:
+  key_cluster_count: 4
+  fake_key_noise: 0.2
