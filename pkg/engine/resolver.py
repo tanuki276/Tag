@@ -1,120 +1,157 @@
 import numpy as np
 from collections import defaultdict
 from pkg.schema.models import Action
+from pkg.engine.pathfinder import Pathfinder
 
 class ActionResolver:
     def __init__(self, config):
         self.config = config
+        self.pathfinder = None
 
     def resolve(self, intents, state):
+        if self.pathfinder is None:
+            self.pathfinder = Pathfinder(state.grid)
+
         sorted_ids = sorted(
             intents.keys(),
             key=lambda x: (intents[x].priority, state.actor_data[x].is_oni),
             reverse=True
         )
 
-        reserved_moves = {}
-        for a_id in sorted_ids:
-            actor = state.actor_data[a_id]
-            intent = intents[a_id]
-            path = self._get_full_path(actor.pos, intent.target_pos)
-            valid_pos = actor.pos
-            ignore_walls = intent.metadata.get("ignore_walls", False)
-            
-            for cell in path[1:]:
-                if not ignore_walls and (
-                    cell[0] < 0 or cell[0] >= state.grid.shape[0] or 
-                    cell[1] < 0 or cell[1] >= state.grid.shape[1] or 
-                    state.grid[cell] == 1
-                ):
-                    break
-                valid_pos = cell
-            reserved_moves[a_id] = valid_pos
+        status_updates = defaultdict(dict)
 
+        self._handle_ongoing_buffs(state, status_updates)
+        skill_executed = self._prepare_skills(intents, state, status_updates)
+
+        planned_paths = {}
+        final_positions = self._resolve_movement_collision(
+            sorted_ids, intents, state, status_updates, planned_paths
+        )
+
+        self._resolve_combat_refined(final_positions, state, planned_paths, status_updates)
+        self._resolve_items(final_positions, state, status_updates)
+        self._finalize_actions(state, status_updates, skill_executed)
+
+        return {
+            a_id: Action(target_pos=pos, status_update=status_updates[a_id])
+            for a_id, pos in final_positions.items()
+        }
+
+    def _handle_ongoing_buffs(self, state, status_updates):
+        for a_id, actor in state.actor_data.items():
+            duration = getattr(actor, 'asclepius_duration', 0)
+            if duration > 0:
+                new_duration = duration - 1
+                status_updates[a_id]['asclepius_duration'] = new_duration
+                if new_duration == 0:
+                    status_updates[a_id]['stamina_rate'] = 1.0
+                    status_updates[a_id]['asclepius_active'] = False
+
+    def _resolve_movement_collision(self, sorted_ids, intents, state, status_updates, planned_paths):
         final_positions = {}
-        occupied_now = {a.pos for a in state.actor_data.values() if a.alive and not a.escaped}
-
+        occupied = {tuple(a.pos) for a in state.actor_data.values() if a.alive and not a.escaped}
+        
         for a_id in sorted_ids:
             actor = state.actor_data[a_id]
-            target = reserved_moves[a_id]
-            
-            if target == actor.pos:
-                final_positions[a_id] = target
+            if not actor.alive or actor.escaped:
                 continue
 
-            if target in final_positions.values() or (target in occupied_now and target not in [state.actor_data[i].pos for i in sorted_ids if i not in final_positions]):
-                final_positions[a_id] = actor.pos
+            current_pos = tuple(actor.pos)
+            if current_pos in occupied:
+                occupied.remove(current_pos)
+
+            target_pos = tuple(intents[a_id].target_pos)
+            speed = 2 if status_updates[a_id].get("asclepius_active") or \
+                        getattr(actor, 'asclepius_active', False) else 1
+            
+            if current_pos == target_pos:
+                path = [current_pos]
             else:
-                final_positions[a_id] = target
+                full_path = self.pathfinder._astar(current_pos, target_pos)
+                path = (full_path or [current_pos])[:speed + 1]
 
-        resolved = {a_id: Action(target_pos=pos, status_update={}) 
-                    for a_id, pos in final_positions.items()}
+            while len(path) > 1 and path[-1] in occupied:
+                path.pop()
 
-        self._resolve_combat(intents, resolved, state)
-        self._resolve_items(resolved, state)
+            final_pos = path[-1]
+            final_positions[a_id] = list(final_pos)
+            planned_paths[a_id] = path
+            occupied.add(final_pos)
+            
+        return final_positions
 
-        return resolved
-
-    def _resolve_combat(self, intents, resolved, state):
+    def _resolve_combat_refined(self, final_positions, state, planned_paths, status_updates):
         onis = [a_id for a_id, a in state.actor_data.items() if a.is_oni]
         humans = [a_id for a_id, a in state.actor_data.items() if not a.is_oni and a.alive]
 
         for h_id in humans:
             h_actor = state.actor_data[h_id]
-            if h_actor.invincible or not h_actor.alive: continue
-
-            h_start = h_actor.pos
-            h_end = resolved[h_id].target_pos
-            if h_end is None: continue
-            
-            h_path = set(self._get_full_path(h_start, h_end))
-
-            for o_id in onis:
-                o_start = state.actor_data[o_id].pos
-                o_end = resolved[o_id].target_pos
-                o_path = set(self._get_full_path(o_start, o_end))
-
-                if h_end == o_end or (h_path & o_path):
-                    if not getattr(h_actor, 'has_doll', False):
-                        resolved[h_id].target_pos = None
-                        resolved[h_id].status_update["alive"] = False
-                        break
-                    else:
-                        h_actor.has_doll = False
-                        resolved[h_id].target_pos = h_start
-                        break
-
-    def _resolve_items(self, resolved, state):
-        items_to_remove = set()
-        for a_id, action in resolved.items():
-            actor = state.actor_data[a_id]
-            pos = action.target_pos
-            if not pos or not getattr(actor, 'is_human', True) or pos not in state.map_elements:
+            if getattr(h_actor, 'invincible', False) or status_updates[h_id].get('alive') is False:
                 continue
 
-            element = state.map_elements[pos]
-            if getattr(actor, 'dream_mode', 0) > 0:
-                if element.type.name == "KEY":
-                    element.properties["identified"] = True
-            else:
-                if element.type.name == "KEY":
-                    if element.properties.get("is_real"):
-                        state.exit_open = True
-                    items_to_remove.add(pos)
-                elif element.type.name == "DOLL":
-                    actor.has_doll = True
-                    items_to_remove.add(pos)
+            h_path = [tuple(p) for p in planned_paths.get(h_id, [])]
+            for o_id in onis:
+                o_path = [tuple(p) for p in planned_paths.get(o_id, [])]
+                if not h_path or not o_path: continue
 
-        for pos in items_to_remove:
-            if pos in state.map_elements:
-                del state.map_elements[pos]
+                collision = False
+                if h_path[-1] == o_path[-1]:
+                    collision = True
+                elif len(set(h_path) & set(o_path)) > 1:
+                    collision = True
 
-    def _get_full_path(self, p1, p2):
-        path = [tuple(p1)]
-        curr = list(p1)
-        while tuple(curr) != tuple(p2):
-            for i in range(2):
-                if curr[i] != p2[i]:
-                    curr[i] += 1 if p2[i] > curr[i] else -1
-            path.append(tuple(curr))
-        return path
+                if collision:
+                    if getattr(h_actor, 'has_doll', False):
+                        status_updates[h_id]['has_doll'] = False
+                        final_positions[h_id] = list(h_path[0])
+                    else:
+                        status_updates[h_id]['alive'] = False
+                        final_positions[h_id] = list(h_path[0])
+                    break
+
+    def _prepare_skills(self, intents, state, status_updates):
+        executed = set()
+        for a_id, intent in intents.items():
+            if intent.action == "ASCLEPIUS":
+                actor = state.actor_data[a_id]
+                if getattr(actor, 'mp_charge', 0) >= 1000:
+                    executed.add(a_id)
+                    for t_id, t_actor in state.actor_data.items():
+                        if not t_actor.is_oni and self._l1_dist(actor.pos, t_actor.pos) <= 10:
+                            status_updates[t_id].update({
+                                "asclepius_active": True,
+                                "asclepius_duration": 5,
+                                "stamina_rate": 0.3
+                            })
+        return executed
+
+    def _finalize_actions(self, state, status_updates, skill_executed):
+        for a_id in skill_executed:
+            if status_updates[a_id].get('alive', state.actor_data[a_id].alive):
+                current_mp = state.actor_data[a_id].mp_charge
+                status_updates[a_id]['mp_charge'] = current_mp - 1000
+
+    def _resolve_items(self, final_positions, state, status_updates):
+        taken_items = set()
+        for a_id, pos in final_positions.items():
+            if status_updates[a_id].get('alive') is False:
+                continue
+            
+            pos_tuple = tuple(pos)
+            if pos_tuple in taken_items: continue
+
+            item = state.grid_items.get(pos_tuple)
+            if item:
+                if item.type == "DOLL":
+                    status_updates[a_id]['has_doll'] = True
+                    status_updates.setdefault('removed_items', []).append(pos_tuple)
+                    taken_items.add(pos_tuple)
+                elif item.type == "MP_POTION":
+                    actor = state.actor_data[a_id]
+                    new_mp = min(actor.mp_charge + 500, 1000)
+                    status_updates[a_id]['mp_charge'] = new_mp
+                    status_updates.setdefault('removed_items', []).append(pos_tuple)
+                    taken_items.add(pos_tuple)
+
+    def _l1_dist(self, p1, p2):
+        return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
