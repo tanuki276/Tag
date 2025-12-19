@@ -18,10 +18,10 @@ def main():
         sys.exit(1)
 
     logger = GameLogger(level="INFO")
-    
+
     generator = WorldGenerator(seed=config.get("seed"))
     world_state = generator.build_initial_state(config)
-    
+
     core = SimulationCore(state=world_state, config=config, learning_cfg=learning_cfg)
     evaluator = SimulationEvaluator()
 
