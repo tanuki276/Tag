@@ -1,4 +1,4 @@
-oni_adaptation:
+Oni_adaptation:
   learning_rate: 0.15
   forgetting_factor: 0.9
   latency_turns: 5
