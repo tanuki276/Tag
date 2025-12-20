@@ -9,6 +9,7 @@ dependencies = [
     "loguru>=0.7.0",
     "matplotlib>=3.7.0",
     "pillow>=9.0.0",
+    "requests>=2.30.0",
 ]
 
 [build-system]
