@@ -6,7 +6,7 @@ from pkg.engine.core import SimulationCore
 from pkg.factory.generator import WorldGenerator
 from pkg.utils.logger import GameLogger
 from pkg.analysis.evaluator import SimulationEvaluator
-from pkg.utils.visualizer import MapVisualizer
+from pkg.utils.visualizer import URLMapVisualizer
 
 def load_config(config_path: str) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
@@ -20,9 +20,9 @@ def main():
         sys.exit(1)
 
     logger = GameLogger(level="INFO")
-    
-    grid_size = (config["world"]["width"], config["world"]["height"])
-    viz = MapVisualizer(size=grid_size)
+
+    asset_urls = config.get("assets", {}) 
+    viz = URLMapVisualizer(asset_urls=asset_urls)
 
     generator = WorldGenerator(seed=config.get("seed"))
     world_state = generator.build_initial_state(config)
@@ -30,15 +30,16 @@ def main():
     core = SimulationCore(state=world_state, config=config, learning_cfg=learning_cfg)
     evaluator = SimulationEvaluator()
 
-    viz.save_frame(0, core.get_snapshot())
+    initial_snapshot = core.get_snapshot()
+    viz.save_frame(0, initial_snapshot, world_state.grid, world_state.exit_pos)
 
     try:
         for turn in range(1, config["world"]["max_turns"] + 1):
             step_result = core.step()
             evaluator.record_step(step_result)
             logger.log_turn(turn, step_result)
-            
-            viz.save_frame(turn, step_result.snapshot)
+
+            viz.save_frame(turn, step_result.snapshot, world_state.grid, world_state.exit_pos)
 
             if step_result.is_terminal:
                 break
