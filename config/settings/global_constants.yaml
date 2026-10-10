@@ -14,16 +14,26 @@ game_rules:
 entities:
   human:
     count: 8
+    oracle_count: 1
     vision_range: 6
     initial_dolls: 1
     doll_relief_turns: 6
     base_mp: 60
-    move_priority: 1
+    move_priority: 20
+  oracle:
+    vision_range: 10
+    initial_mp: 500
+    max_mp: 1500
+    mp_recover: 25
   oni:
     count: 3
     vision_range: 11
     base_speed: 1
     dash_chance: 0.85
-    move_priority: 10
+    move_priority: 50
+
+items:
+  dolls_spawned: 3
+  mp_potions_spawned: 3
 
 balance_mode: "DRUG_ADJUSTED"
