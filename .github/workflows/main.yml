@@ -33,13 +33,12 @@ jobs:
       - name: Create Video
         run: |
           ffmpeg -framerate 10 -i frames/frame_%03d.png -c:v libx264 -pix_fmt yuv420p -y result.mp4
+          rm -rf frames
 
-      - name: Upload Artifacts
+      - name: Upload Video
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-results
-          path: |
-            result.mp4
-            frames/
+          name: simulation-video
+          path: result.mp4
           if-no-files-found: warn

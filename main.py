@@ -25,18 +25,36 @@ def main():
 
     logger = GameLogger(level="INFO")
     visualizer = URLMapVisualizer(asset_urls=config.get("assets", {}), output_dir="frames")
-    generator = WorldGenerator(seed=config["world"].get("seed"), generation_cfg=generation_cfg)
+    generator = WorldGenerator(
+        seed=config["world"].get("seed"),
+        generation_cfg=generation_cfg,
+    )
     world_state = generator.build_initial_state(config)
     core = SimulationCore(world_state, config, learning_cfg)
     evaluator = SimulationEvaluator()
 
-    visualizer.save_frame(0, core.get_snapshot(), world_state.grid, world_state.exit_pos)
+    visualizer.save_frame(
+        0,
+        core.get_snapshot(),
+        world_state.grid,
+        world_state.exit_pos,
+        grid_items=world_state.grid_items,
+        exit_open=world_state.exit_open,
+    )
+
     try:
         for turn in range(1, config["world"]["max_turns"] + 1):
             result = core.step()
             evaluator.record_step(result)
             logger.log_turn(turn, result)
-            visualizer.save_frame(turn, result.snapshot, world_state.grid, world_state.exit_pos)
+            visualizer.save_frame(
+                turn,
+                result.snapshot,
+                world_state.grid,
+                world_state.exit_pos,
+                grid_items=world_state.grid_items,
+                exit_open=world_state.exit_open,
+            )
             if result.is_terminal:
                 break
     except Exception as exc:

@@ -35,6 +35,10 @@ class WorldState:
         return self
 
     def _check_exit_condition(self):
+        if not bool(self.config["game_rules"].get("escape_enabled", True)):
+            self.exit_open = False
+            return
+
         if not self.exit_open:
             required = int(self.config["game_rules"].get("num_keys_needed", 0))
             identified = sum(
@@ -84,6 +88,7 @@ class WorldState:
                 "mp_charge",
                 "asclepius_active",
                 "slow_duration",
+                "blocked_turns",
             ):
                 if hasattr(actor, attr):
                     data[attr] = getattr(actor, attr)

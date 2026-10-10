@@ -24,6 +24,19 @@ class Pathfinder:
         path = self.get_path(start, goal)
         return path[1] if len(path) > 1 else tuple(start)
 
+    def get_neighbors(self, pos):
+        y, x = map(int, pos)
+        neighbors = []
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            nxt = (y + dy, x + dx)
+            if not self._valid(nxt):
+                continue
+            if dy and dx:
+                if not self._valid((y + dy, x)) or not self._valid((y, x + dx)):
+                    continue
+            neighbors.append(nxt)
+        return neighbors
+
     def _astar(self, start, goal):
         start, goal = tuple(start), tuple(goal)
         if not self._valid(start) or not self._valid(goal):
@@ -48,18 +61,10 @@ class Pathfinder:
                 return list(reversed(path))
 
             closed.add(current)
-            for dy, dx in ((0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)):
-                nxt = (current[0] + dy, current[1] + dx)
-                if not self._valid(nxt) or nxt in closed:
-                    continue
-                if dy and dx:
-                    if not self._valid((current[0] + dy, current[1])):
-                        continue
-                    if not self._valid((current[0], current[1] + dx)):
-                        continue
-                    cost = 1.414
-                else:
-                    cost = 1.0
+            for nxt in self.get_neighbors(current):
+                dy = nxt[0] - current[0]
+                dx = nxt[1] - current[1]
+                cost = 1.414 if dy and dx else 1.0
                 tentative = g_score[current] + cost
                 if tentative < g_score.get(nxt, float("inf")):
                     came_from[nxt] = current
@@ -100,31 +105,66 @@ class Pathfinder:
         while queue:
             y, x = queue.popleft()
             base = distances[y, x]
-            for dy, dx in ((0,1),(0,-1),(1,0),(-1,0)):
+            for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
                 nxt = (y + dy, x + dx)
                 if self._valid(nxt) and distances[nxt] > base + 1:
                     distances[nxt] = base + 1
                     queue.append(nxt)
         return distances
 
-    def get_safe_direction(self, start, threats, distance=8):
+    def get_safe_direction(
+        self,
+        start,
+        threats,
+        distance=8,
+        avoid_positions=None,
+        preferred_goal=None,
+        crowd_weight=1.5,
+    ):
         start = tuple(map(int, start))
         threats = [tuple(map(int, p)) for p in threats]
+        avoid_positions = [
+            tuple(map(int, p))
+            for p in (avoid_positions or [])
+            if tuple(map(int, p)) != start
+        ]
+        preferred_goal = tuple(map(int, preferred_goal)) if preferred_goal is not None else None
+
         if not threats:
-            return start
+            return preferred_goal if preferred_goal is not None else start
+
         best, best_score = start, -float("inf")
         sy, sx = start
-        for y in range(max(0, sy-distance), min(self.height, sy+distance+1)):
-            for x in range(max(0, sx-distance), min(self.width, sx+distance+1)):
+        for y in range(max(0, sy - distance), min(self.height, sy + distance + 1)):
+            for x in range(max(0, sx - distance), min(self.width, sx + distance + 1)):
                 candidate = (y, x)
                 if not self._valid(candidate):
                     continue
                 path = self._astar(start, candidate)
                 if len(path) <= 1 and candidate != start:
                     continue
+
                 threat_dist = min(self._dist(candidate, t) for t in threats)
-                mobility = sum(self._valid((y+dy, x+dx)) for dy, dx in ((0,1),(0,-1),(1,0),(-1,0)))
-                score = threat_dist + mobility * 0.35 - max(0, len(path)-1) * 0.15
+                mobility = len(self.get_neighbors(candidate))
+                path_len = max(0, len(path) - 1)
+
+                crowd_penalty = 0.0
+                for occupied in avoid_positions:
+                    d = self._dist(candidate, occupied)
+                    if d < 3.0:
+                        crowd_penalty += (3.0 - d) * crowd_weight
+
+                dead_end_penalty = 2.0 if mobility <= 1 else 0.0
+                goal_bias = -0.10 * self._dist(candidate, preferred_goal) if preferred_goal is not None else 0.0
+
+                score = (
+                    threat_dist
+                    + mobility * 0.45
+                    - path_len * 0.12
+                    - crowd_penalty
+                    - dead_end_penalty
+                    + goal_bias
+                )
                 if score > best_score:
                     best_score, best = score, candidate
         return best
