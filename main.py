@@ -1,55 +1,51 @@
 import sys
+
 import yaml
-import os
-from pathlib import Path
+
+from pkg.analysis.evaluator import SimulationEvaluator
 from pkg.engine.core import SimulationCore
 from pkg.factory.generator import WorldGenerator
 from pkg.utils.logger import GameLogger
-from pkg.analysis.evaluator import SimulationEvaluator
 from pkg.utils.visualizer import URLMapVisualizer
 
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+
+def load_config(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
 
 def main():
     try:
         config = load_config("config/settings/global_constants.yaml")
         learning_cfg = load_config("config/settings/learning.yaml")
-    except FileNotFoundError:
-        sys.exit(1)
+        generation_cfg = load_config("config/settings/generation.yaml")
+    except FileNotFoundError as exc:
+        print(f"Missing configuration: {exc}", file=sys.stderr)
+        return 1
 
     logger = GameLogger(level="INFO")
-
-    asset_urls = config.get("assets", {}) 
-    viz = URLMapVisualizer(asset_urls=asset_urls)
-
-    generator = WorldGenerator(seed=config.get("seed"))
+    visualizer = URLMapVisualizer(asset_urls=config.get("assets", {}), output_dir="frames")
+    generator = WorldGenerator(seed=config["world"].get("seed"), generation_cfg=generation_cfg)
     world_state = generator.build_initial_state(config)
-
-    core = SimulationCore(state=world_state, config=config, learning_cfg=learning_cfg)
+    core = SimulationCore(world_state, config, learning_cfg)
     evaluator = SimulationEvaluator()
 
-    initial_snapshot = core.get_snapshot()
-    viz.save_frame(0, initial_snapshot, world_state.grid, world_state.exit_pos)
-
+    visualizer.save_frame(0, core.get_snapshot(), world_state.grid, world_state.exit_pos)
     try:
         for turn in range(1, config["world"]["max_turns"] + 1):
-            step_result = core.step()
-            evaluator.record_step(step_result)
-            logger.log_turn(turn, step_result)
-
-            viz.save_frame(turn, step_result.snapshot, world_state.grid, world_state.exit_pos)
-
-            if step_result.is_terminal:
+            result = core.step()
+            evaluator.record_step(result)
+            logger.log_turn(turn, result)
+            visualizer.save_frame(turn, result.snapshot, world_state.grid, world_state.exit_pos)
+            if result.is_terminal:
                 break
-
-    except Exception as e:
-        logger.error(f"Engine Crash: {str(e)}")
+    except Exception as exc:
+        logger.lib.error(f"Engine Crash: {exc}")
         raise
 
-    report = evaluator.generate_final_report()
-    logger.print_report(report)
+    logger.print_report(evaluator.generate_final_report())
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

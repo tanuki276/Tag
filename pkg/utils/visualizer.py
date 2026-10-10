@@ -1,57 +1,38 @@
 import os
-from io import BytesIO
-import requests
+
 import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
-import numpy as np
-from typing import Dict, Tuple, List
-from pkg.schema.models import ActorStatus
+
 
 class URLMapVisualizer:
-    def __init__(self, asset_urls: Dict[str, List[str]], output_dir: str = "frames"):
+    def __init__(self, asset_urls=None, output_dir="frames"):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
-        self.imgs = {key: self._fetch_strictly(urls, key) for key, urls in asset_urls.items()}
 
-    def _fetch_strictly(self, urls: List[str], name: str):
-        for url in urls:
-            try:
-                resp = requests.get(url, timeout=5.0)
-                resp.raise_for_status()
-                return mpimg.imread(BytesIO(resp.content))
-            except Exception:
-                continue
-        raise RuntimeError(f"CRITICAL_ASSET_MISSING: {name}")
-
-    def save_frame(self, turn: int, snapshot: Dict[str, ActorStatus], grid: np.ndarray, exit_pos: Tuple[int, int]):
+    def save_frame(self, turn, snapshot, grid, exit_pos):
         h, w = grid.shape
-        fig, ax = plt.subplots(figsize=(w * 0.5, h * 0.5))
-        ax.set_xlim(0, w)
-        ax.set_ylim(0, h)
-        ax.axis('off')
-
-        for y in range(h):
-            for x in range(w):
-                py = h - y - 1
-                tile = "wall" if grid[y, x] == 1 else "floor"
-                ax.imshow(self.imgs[tile], extent=(x, x + 1, py, py + 1), zorder=0)
-
+        fig, ax = plt.subplots(figsize=(7, 7))
+        ax.imshow(grid, cmap="Greys", vmin=0, vmax=1, interpolation="nearest")
         ey, ex = exit_pos
-        ax.imshow(self.imgs["exit"], extent=(ex, ex + 1, h - ey - 1, h - ey), zorder=1)
-
+        ax.scatter([ex], [ey], marker="s", s=180, facecolors="none", edgecolors="green", linewidths=2)
+        humans_x, humans_y, onis_x, onis_y, labels = [], [], [], [], []
         for a_id, status in snapshot.items():
-            if status.pos is None or not status.alive or status.escaped:
+            if not status.get("alive") or status.get("escaped"):
                 continue
-            
-            ay, ax_pos = status.pos
-            img_key = "oni" if status.is_oni else "human"
-            py = h - ay - 1
-            
-            ax.imshow(self.imgs[img_key], extent=(ax_pos, ax_pos + 1, py, py + 1), zorder=2)
-            ax.text(ax_pos + 0.5, py + 1.1, a_id, 
-                    ha='center', va='bottom', fontsize=9, color='yellow',
-                    fontweight='bold', bbox=dict(facecolor='black', alpha=0.7, lw=0, pad=1))
-
-        plt.savefig(os.path.join(self.output_dir, f"frame_{turn:03}.png"), 
-                    bbox_inches='tight', pad_inches=0, dpi=120)
+            y, x = status["pos"]
+            if status.get("is_oni"):
+                onis_x.append(x); onis_y.append(y)
+            else:
+                humans_x.append(x); humans_y.append(y)
+            labels.append((a_id, x, y))
+        if humans_x:
+            ax.scatter(humans_x, humans_y, marker="o", s=80)
+        if onis_x:
+            ax.scatter(onis_x, onis_y, marker="X", s=100)
+        for label, x, y in labels:
+            ax.text(x + 0.18, y - 0.18, label, fontsize=6)
+        ax.set_title(f"Turn {turn}")
+        ax.set_xlim(-0.5, w-0.5); ax.set_ylim(h-0.5, -0.5)
+        ax.set_xticks([]); ax.set_yticks([])
+        fig.tight_layout()
+        fig.savefig(os.path.join(self.output_dir, f"frame_{turn:03d}.png"), dpi=100)
         plt.close(fig)

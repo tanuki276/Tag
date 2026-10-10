@@ -1,156 +1,113 @@
 import numpy as np
-from pkg.entities.actor import BaseActor
+
 from pkg.engine.pathfinder import Pathfinder
-from pkg.schema.models import Intent
+from pkg.entities.actor import BaseActor
+from pkg.schema.models import ActionType, Intent, Priority
+
 
 class Oni(BaseActor):
-    shared_targets = {}
-    shared_onis = {}
-    _dijkstra_maps = {}
-    _next_intent_map = {}
-    _common_pathfinder = None
-    _last_sync_turn = -1
-
-    @classmethod
-    def reset_shared_memory(cls):
-        cls.shared_targets.clear()
-        cls.shared_onis.clear()
-        cls._dijkstra_maps.clear()
-        cls._next_intent_map.clear()
-        cls._common_pathfinder = None
-        cls._last_sync_turn = -1
-
     def __init__(self, a_id, pos, config, role="CHASER"):
         super().__init__(a_id, pos, config)
         self.is_oni = True
         self.role = role
-        self.target_id = None
+        self.vision_range = config["entities"]["oni"]["vision_range"]
 
     def decide(self, view):
+        if self.confused > 0:
+            return Intent(target_pos=self.pos, priority=int(Priority.WAIT), action_type=ActionType.STAY)
         grid = view.memory.get("grid_map")
-        turn = view.memory.get("current_turn", 0)
-        if grid is None: return Intent(target_pos=self.pos, priority=0)
-
-        self._global_sync(view, grid, turn)
-        self._select_best_target(turn)
-
-        if self.target_id and self.target_id in Oni.shared_targets:
-            info = Oni.shared_targets[self.target_id]
-            target_pos = self._calculate_predatory_pos(info, grid)
-            dist = self._l1_dist(self.pos, info["pos"])
-            # 距離に応じた適度な優先度。少し「揺らぎ」を持たせる
-            priority = 90 if dist < 3 else 70
+        if grid is None:
+            return Intent(target_pos=self.pos, priority=int(Priority.WAIT))
+        humans = [a for a in view.actors if not a.is_oni and a.alive and not a.escaped]
+        target = None
+        if humans:
+            target = min(humans, key=lambda h: self._l1(self.pos, h.pos))
+            predicted = self._predict_target(target.a_id, target.pos, view.memory)
         else:
-            target_pos = self._get_strategic_patrol(grid, turn)
-            priority = 20
-
-        return self._hierarchical_move(target_pos, grid, priority)
-
-    def _global_sync(self, view, grid, turn):
-        if Oni._last_sync_turn != turn:
-            Oni._common_pathfinder = Pathfinder(grid)
-            Oni._last_sync_turn = turn
-            Oni._dijkstra_maps.clear()
-            Oni._next_intent_map.clear()
-            
-            Oni.shared_onis = {a["a_id"]: {"pos": tuple(map(int, a["pos"])), "role": a.get("role", "CHASER")} 
-                               for a in view.actors if a.get("is_oni")}
-
-            for a in view.actors:
-                if not a.get("is_oni") and a.get("alive"):
-                    tid, n_pos = a["a_id"], tuple(map(int, a["pos"]))
-                    old = Oni.shared_targets.get(tid, {"pos": n_pos})
-                    # 1. 速度予測のリミッター（飛びすぎ防止）
-                    raw_vel = np.array([n_pos[0] - old["pos"][0], n_pos[1] - old["pos"][1]])
-                    lim_vel = np.clip(raw_vel, -1, 1) * 2 
-                    pred_pos = (int(n_pos[0] + lim_vel[0]), int(n_pos[1] + lim_vel[1]))
-                    eval_pos = pred_pos if self._is_valid(pred_pos, grid) else n_pos
-                    
-                    Oni.shared_targets[tid] = {"pos": n_pos, "pred_pos": eval_pos, "turn": turn}
-                    Oni._dijkstra_maps[tid] = Oni._common_pathfinder.generate_dijkstra_map(eval_pos)
-
-    def _calculate_predatory_pos(self, info, grid):
-        t_pos = np.array(info["pos"])
-        pred_pos = np.array(info["pred_pos"])
-        d_map = Oni._dijkstra_maps[self.target_id]
-
-        if self.role == "CHASER":
-            return tuple(t_pos.astype(int))
-
-        if self.role == "BLOCKER":
-            # 2. 到着後は周辺を「うろうろ」して網を広げる
-            base_choke = self._find_escape_route_block(pred_pos, d_map, grid)
-            if self._l1_dist(self.pos, base_choke) <= 1:
-                return self._get_jitter_pos(base_choke, grid)
-            return base_choke
-
-        if self.role == "AMBUSHER":
-            return self._find_active_ambush(pred_pos, grid)
-
-    def _find_escape_route_block(self, pred_pos, d_map, grid):
-        best_choke, min_score = tuple(pred_pos), float('inf')
-        for r in range(1, 6):
-            for dx, dy in [(r,0),(-r,0),(0,r),(0,-r)]:
-                p = (int(pred_pos[0]+dx), int(pred_pos[1]+dy))
-                if self._is_valid(p, grid):
-                    conn = sum(1 for m in [(0,1),(0,-1),(1,0),(-1,0)] if self._is_valid((p[0]+m[0], p[1]+m[1]), grid))
-                    score = d_map[p] + (0 if conn >= 3 else 15)
-                    if score < min_score:
-                        min_score, best_choke = score, p
-        return best_choke
-
-    def _get_jitter_pos(self, center, grid):
-        """目的地の周辺1マスでランダムに揺らす（封鎖の厚みを出す）"""
-        rng = np.random.default_rng()
-        candidates = [(center[0]+dx, center[1]+dy) for dx, dy in [(0,0),(0,1),(0,-1),(1,0),(-1,0)]]
-        valid = [c for c in candidates if self._is_valid(c, grid)]
-        return tuple(rng.choice(valid)) if valid else center
-
-    def _hierarchical_move(self, target_pos, grid, priority):
-        temp_grid = grid.copy()
-        for pos, oid in Oni._next_intent_map.items():
-            if oid < self.a_id: temp_grid[pos] = 1
-        
-        try:
-            nxt = Pathfinder(temp_grid).get_next_step(self.pos, target_pos)
-            if nxt is None: raise ValueError
-        except:
-            # 3. 譲り合いのデッドロック解消（低確率でランダム移動）
-            rng = np.random.default_rng()
-            if rng.random() < 0.2:
-                moves = [(self.pos[0]+dx, self.pos[1]+dy) for dx, dy in [(0,1),(0,-1),(1,0),(-1,0)]]
-                valid = [m for m in moves if self._is_valid(m, grid) and m not in Oni._next_intent_map]
-                nxt = rng.choice(valid) if valid else self.pos
+            remembered = self._latest_remembered_human(view.memory)
+            if remembered is not None:
+                predicted = remembered
             else:
-                nxt = self.pos
+                return Intent(target_pos=self._patrol(grid, view.memory.get("current_turn", 0)), priority=int(Priority.WAIT))
+        finder = Pathfinder(grid)
+        if self.role == "CHASER" and target is not None:
+            destination = target.pos
+        elif self.role == "BLOCKER":
+            destination = self._block_position(predicted, grid, finder)
+        elif self.role == "AMBUSHER":
+            destination = self._ambush_position(predicted, grid)
+        else:
+            destination = predicted
+        return Intent(target_pos=destination, priority=int(Priority.SKILL_HIGH if target is not None else Priority.MOVE_DEFAULT), action_type=ActionType.MOVE, metadata={"target_id": target.a_id if target is not None else None})
 
-        nxt_tuple = tuple(map(int, nxt))
-        Oni._next_intent_map[nxt_tuple] = self.a_id
-        return Intent(target_pos=nxt_tuple, priority=priority)
+    def _predict_target(self, target_id, current_pos, memory):
+        history = memory.get("prediction_map", {}).get(target_id, [])
+        if len(history) >= 2:
+            prev, last = np.array(history[-2]), np.array(history[-1])
+            velocity = np.clip(last-prev, -1, 1)
+            return tuple(map(int, last + velocity*2))
+        return tuple(current_pos)
 
-    def _is_valid(self, p, grid):
+    def _latest_remembered_human(self, memory):
+        seen = [info for info in memory.get("actors", {}).values() if not info.get("is_oni") and info.get("pos") is not None]
+        return tuple(max(seen, key=lambda info: info.get("last_turn", -1))["pos"]) if seen else None
+
+    def _block_position(self, predicted, grid, finder):
+        py, px = predicted
+        dmap = finder.generate_dijkstra_map(self._nearest_valid((py, px), grid))
+        best, best_score = self._nearest_valid((py, px), grid), float("inf")
+        for radius in range(1, 6):
+            for dy, dx in ((radius,0),(-radius,0),(0,radius),(0,-radius)):
+                p = (py+dy, px+dx)
+                if not self._valid(p, grid):
+                    continue
+                score = dmap[p] + self._connectivity(p, grid)*2
+                if score < best_score:
+                    best_score, best = score, p
+        return best
+
+    def _ambush_position(self, predicted, grid):
+        py, px = predicted
+        best, best_score = self._nearest_valid((py, px), grid), float("inf")
+        for dy in range(-3, 4):
+            for dx in range(-3, 4):
+                p = (py+dy, px+dx)
+                if self._valid(p, grid):
+                    score = self._connectivity(p, grid) + 0.2*self._l1(p, predicted)
+                    if score < best_score:
+                        best_score, best = score, p
+        return best
+
+    def _patrol(self, grid, turn):
+        rng = np.random.default_rng((hash(self.a_id)+int(turn)) & 0xFFFFFFFF)
+        for _ in range(30):
+            y, x = int(rng.integers(0, grid.shape[0])), int(rng.integers(0, grid.shape[1]))
+            if grid[y, x] == 0:
+                return (y, x)
+        return self.pos
+
+    @staticmethod
+    def _valid(p, grid):
         return 0 <= p[0] < grid.shape[0] and 0 <= p[1] < grid.shape[1] and grid[p] == 0
 
-    def _l1_dist(self, p1, p2):
-        return abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])
+    def _nearest_valid(self, p, grid):
+        if self._valid(p, grid):
+            return p
+        for radius in range(1, max(grid.shape)):
+            for dy in range(-radius, radius+1):
+                for dx in (-radius, radius):
+                    q = (p[0]+dy, p[1]+dx)
+                    if self._valid(q, grid): return q
+            for dx in range(-radius+1, radius):
+                for dy in (-radius, radius):
+                    q = (p[0]+dy, p[1]+dx)
+                    if self._valid(q, grid): return q
+        return self.pos
 
-    def _select_best_target(self, turn):
-        valid_tids = [tid for tid, info in Oni.shared_targets.items() if turn - info["turn"] < 5]
-        if not valid_tids: return
-        self.target_id = min(valid_tids, key=lambda tid: self._l1_dist(self.pos, Oni.shared_targets[tid]["pos"]))
+    @staticmethod
+    def _connectivity(p, grid):
+        return sum(0 <= p[0]+dy < grid.shape[0] and 0 <= p[1]+dx < grid.shape[1] and grid[p[0]+dy, p[1]+dx] == 0 for dy, dx in ((0,1),(0,-1),(1,0),(-1,0)))
 
-    def _find_active_ambush(self, pred_pos, grid):
-        best_trap, min_conn = tuple(pred_pos.astype(int)), 5
-        for dx in range(-3, 4):
-            for dy in range(-3, 4):
-                p = (int(pred_pos[0]+dx), int(pred_pos[1]+dy))
-                if self._is_valid(p, grid):
-                    conn = sum(1 for m in [(0,1),(0,-1),(1,0),(-1,0)] if self._is_valid((p[0]+m[0], p[1]+m[1]), grid))
-                    if conn < min_conn:
-                        min_conn, best_trap = conn, p
-        return best_trap
-
-    def _get_strategic_patrol(self, grid, turn):
-        w, h = grid.shape
-        rng = np.random.default_rng(hash(self.a_id) + turn)
-        return (rng.integers(0, w), rng.integers(0, h))
+    @staticmethod
+    def _l1(a, b):
+        return abs(a[0]-b[0]) + abs(a[1]-b[1])

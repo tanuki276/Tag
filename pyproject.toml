@@ -1,16 +1,17 @@
 [project]
 name = "tag-engine-drug-adjusted"
-version = "0.1.0"
-description = "High-fidelity survival simulation engine with asymmetric information and adaptive AI."
+version = "0.2.0"
+description = "Asymmetric-information tag survival simulation engine."
 dependencies = [
     "numpy>=1.24.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
     "loguru>=0.7.0",
     "matplotlib>=3.7.0",
-    "pillow>=9.0.0",
-    "requests>=2.30.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

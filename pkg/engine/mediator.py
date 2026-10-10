@@ -1,91 +1,86 @@
-import numpy as np
+from pkg.engine.pathfinder import Pathfinder
 from pkg.schema.models import LocalView
+
 
 class InformationMediator:
     def __init__(self, config):
         self.config = config
 
     def get_local_views(self, state):
-        alive_actors = [a for a in state.actor_data.values() if a.alive and not a.escaped]
-        return {
-            actor.a_id: self._build_view(actor, state, alive_actors)
-            for actor in alive_actors
-        }
+        active = [a for a in state.actor_data.values() if a.alive and not a.escaped]
+        views = {actor.a_id: self._build_view(actor, state, active) for actor in active}
+        self._share_oni_sightings(views, state)
+        return views
 
-    def _build_view(self, actor, state, all_alive_actors):
-        v_range = getattr(actor, 'vision_range', 5)
-        if getattr(actor, 'stamina', 100) < 10:
-            v_range = max(1, v_range // 2)
+    def _build_view(self, actor, state, active):
+        vision = getattr(actor, "vision_range", 5)
+        if not actor.is_oni and getattr(actor, "stamina", 100) < 10:
+            vision = max(1, vision // 2)
 
-        visible_actors = [
-            other.get_public_status() for other in all_alive_actors
-            if other.a_id != actor.a_id and self._is_visible(actor.pos, other.pos, v_range, state.grid)
-        ]
+        oracle = getattr(actor, "job", None) == "ORACLE"
+        visible_actors = []
+        for other in active:
+            if other.a_id == actor.a_id:
+                continue
+            if self._is_visible(actor.pos, other.pos, vision, state.grid, ignore_walls=oracle):
+                status = other.get_public_status()
+                visible_actors.append(status)
+                actor.memory.update_seen_actor(other.a_id, status, state.turn)
+                if actor.is_oni and not other.is_oni:
+                    actor.memory.update_prediction(other.a_id, other.pos)
 
-        visible_elements = [
-            (pos, el) for pos, el in state.grid_items.items()
-            if self._is_visible(actor.pos, pos, v_range, state.grid)
-        ]
+        visible_elements = []
+        for pos, element in state.grid_items.items():
+            if self._is_visible(actor.pos, pos, vision, state.grid):
+                visible_elements.append(element)
+                actor.memory.record_element(pos, element)
 
-        mem = actor.memory.get_relevant(state.turn)
-        mem["grid_map"] = state.grid
+        memory = actor.memory.get_relevant(state.turn)
+        memory["grid_map"] = state.grid
+        memory["exit_open"] = state.exit_open
+        memory["exit_pos"] = state.exit_pos
 
         return LocalView(
-            pos=actor.pos, 
-            actors=visible_actors, 
-            elements=visible_elements, 
-            memory=mem
+            pos=actor.pos,
+            actors=visible_actors,
+            elements=visible_elements,
+            memory=memory,
         )
 
-    def _is_visible(self, p1, p2, v_range, grid):
-        p1 = (int(p1[0]), int(p1[1]))
-        p2 = (int(p2[0]), int(p2[1]))
-        if (abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])) > v_range:
-            return False
-        return not self._has_wall_between(p1, p2, grid)
+    def _share_oni_sightings(self, views, state):
+        shared = {}
+        for a_id, view in views.items():
+            if not state.actor_data[a_id].is_oni:
+                continue
+            for status in view.actors:
+                if not status.is_oni:
+                    shared[status.a_id] = status
 
-    def _has_wall_between(self, p1, p2, grid):
-        y0, x0 = p1
-        y1, x1 = p2
-        dy, dx = abs(y1 - y0), abs(x1 - x0)
-        y, x = y0, x0
-        n = 1 + dx + dy
-        y_inc = 1 if y1 > y0 else -1
-        x_inc = 1 if x1 > x0 else -1
-        error = dx - dy
-        dx *= 2
-        dy *= 2
-        for _ in range(n):
-            if 0 <= y < grid.shape[0] and 0 <= x < grid.shape[1]:
-                if grid[y, x] == 1:
-                    if (y, x) != p1 and (y, x) != p2:
-                        return True
-            if error > 0:
-                x += x_inc
-                error -= dy
-            else:
-                y += y_inc
-                error += dx
-        return False
+        if not shared:
+            return
+
+        for a_id, view in views.items():
+            actor = state.actor_data[a_id]
+            if not actor.is_oni:
+                continue
+            present = {status.a_id for status in view.actors}
+            for target_id, status in shared.items():
+                if target_id not in present:
+                    actor.memory.update_seen_actor(target_id, status, state.turn)
+                    actor.memory.update_prediction(target_id, status.pos)
+                    view.actors.append(status)
+            view.memory = actor.memory.get_relevant(state.turn)
+            view.memory["grid_map"] = state.grid
+            view.memory["exit_open"] = state.exit_open
+            view.memory["exit_pos"] = state.exit_pos
+
+    def _is_visible(self, p1, p2, vision, grid, ignore_walls=False):
+        p1, p2 = tuple(map(int, p1)), tuple(map(int, p2))
+        if abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) > vision:
+            return False
+        if ignore_walls:
+            return True
+        return Pathfinder(grid).has_los(p1, p2)
 
     def inject_learning(self, state, resolved_actions):
-        onis = [a for a in state.actor_data.values() if getattr(a, 'is_oni', False) and a.alive]
-        humans = [a for a in state.actor_data.values() if not getattr(a, 'is_oni', False) and a.alive]
-        for oni in onis:
-            v_range = getattr(oni, 'vision_range', 5)
-            for h in humans:
-                if self._is_visible(oni.pos, h.pos, v_range, state.grid):
-                    oni.memory.update_prediction(h.a_id, h.pos)
-        self._process_oracle_transmission(state)
-
-    def _process_oracle_transmission(self, state):
-        active_oracles = [a for a in state.actor_data.values() if getattr(a, 'dream_mode', 0) > 0]
-        if not active_oracles: return
-        identified_keys = {
-            pos: el for pos, el in state.grid_items.items() 
-            if getattr(el, 'type', '') == "KEY" and getattr(el, 'identified', False)
-        }
-        if not identified_keys: return
-        for h in state.actor_data.values():
-            if not getattr(h, 'is_oni', False) and h.alive:
-                h.memory.known_elements.update(identified_keys)
+        return None

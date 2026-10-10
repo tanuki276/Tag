@@ -1,93 +1,114 @@
-import numpy as np
+from pkg.schema.models import StepResult
+
 
 class WorldState:
-    def __init__(self, grid, actor_data, map_elements, config):
+    def __init__(self, grid, actor_data, map_elements, config, exit_pos):
         self.grid = grid
         self.actor_data = actor_data
-        self.grid_items = map_elements.get("items", {})
+        self.grid_items = dict(map_elements)
         self.config = config
         self.turn = 0
         self.is_terminal = False
         self.termination_reason = ""
         self.exit_open = False
-        self.exit_pos = tuple(config["world"]["exit_pos"])
+        self.exit_pos = tuple(map(int, exit_pos))
 
     def apply(self, resolved_actions):
         self.turn += 1
+        consumed = set()
+
         for a_id, actor in self.actor_data.items():
             action = resolved_actions.get(a_id)
-            if action:
-                actor.commit_status(action.target_pos, action.status_update)
+            if action is not None:
+                updates = dict(action.status_update)
+                consumed.update(tuple(p) for p in updates.pop("_consume_items", []))
+                actor.commit_status(action.target_pos, updates)
             actor.tick()
+
+        for pos in consumed:
+            item = self.grid_items.get(pos)
+            if item is not None and item.kind != "EXIT":
+                self.grid_items.pop(pos, None)
+
         self._check_exit_condition()
         self._check_termination()
         return self
 
-    def get_local_view(self, a_id, pathfinder):
-        actor = self.actor_data[a_id]
-        # 占い師(Oracle)なら視界を広げる、またはLoSを一部無視する
-        is_oracle = getattr(actor, 'job', '') == 'ORACLE'
-        vision_range = self.config["entities"].get("oracle_vision", 15) if is_oracle else 8 
-
-        visible_actors = []
-        for other_id, other_a in self.actor_data.items():
-            if a_id == other_id or not other_a.alive or other_a.escaped:
-                continue
-            
-            dist = pathfinder._dist(actor.pos, other_a.pos)
-            if dist <= vision_range:
-                # LoS判定: 占い師は壁越しでも「位置のみ」把握できる設定
-                if is_oracle or pathfinder.has_los(actor.pos, other_a.pos):
-                    visible_actors.append(other_a.get_status())
-        
-        visible_items = {
-            pos: item for pos, item in self.grid_items.items()
-            if pathfinder._dist(actor.pos, pos) <= vision_range and pathfinder.has_los(actor.pos, pos)
-        }
-
-        return {
-            "pos": actor.pos,
-            "actors": visible_actors,
-            "items": visible_items,
-            "exit_pos": self.exit_pos if self.exit_open else None,
-            "grid_snippet": self.grid # 本来は周囲のみ切り出すべきだが現状維持
-        }
-
     def _check_exit_condition(self):
         if not self.exit_open:
-            return
-        for a_id, actor in self.actor_data.items():
-            if not actor.is_oni and actor.alive and not actor.escaped:
-                if tuple(actor.pos) == self.exit_pos:
+            required = int(self.config["game_rules"].get("num_keys_needed", 0))
+            identified = sum(
+                int(getattr(actor, "keys_identified", 0))
+                for actor in self.actor_data.values()
+                if not actor.is_oni
+            )
+            if identified >= required:
+                self.exit_open = True
+
+        if self.exit_open:
+            for actor in self.actor_data.values():
+                if (
+                    not actor.is_oni
+                    and actor.alive
+                    and not actor.escaped
+                    and tuple(actor.pos) == self.exit_pos
+                ):
                     actor.escaped = True
 
     def _check_termination(self):
         humans = [a for a in self.actor_data.values() if not a.is_oni]
-        total_humans = len(humans)
-        alive_not_escaped = [h for h in humans if h.alive and not h.escaped]
-        escaped_humans = [h for h in humans if h.escaped]
+        active = [h for h in humans if h.alive and not h.escaped]
+        escaped = [h for h in humans if h.escaped]
 
-        if not alive_not_escaped:
+        if not active:
             self.is_terminal = True
-            e_count = len(escaped_humans)
-            if e_count == total_humans:
+            if len(escaped) == len(humans):
                 self.termination_reason = "PERFECT_ESCAPE"
-            elif e_count > 0:
+            elif escaped:
                 self.termination_reason = "PARTIAL_ESCAPE_AND_DEATH"
             else:
                 self.termination_reason = "TOTAL_ANNIHILATION"
             return
 
-        if self.turn >= self.config["world"]["max_turns"]:
+        if self.turn >= int(self.config["world"]["max_turns"]):
             self.is_terminal = True
             self.termination_reason = "MAX_TURNS_REACHED"
 
+    def get_snapshot(self):
+        snapshot = {}
+        for a_id, actor in self.actor_data.items():
+            data = actor.get_public_status().model_dump()
+            for attr in (
+                "has_doll",
+                "keys_identified",
+                "mp_charge",
+                "asclepius_active",
+                "slow_duration",
+            ):
+                if hasattr(actor, attr):
+                    data[attr] = getattr(actor, attr)
+            snapshot[a_id] = data
+        return snapshot
+
+    def export_step_result(self, intents, resolved_actions):
+        return StepResult(
+            turn=self.turn,
+            intents=intents,
+            actions=resolved_actions,
+            snapshot=self.get_snapshot(),
+            is_terminal=self.is_terminal,
+            termination_reason=self.termination_reason,
+        )
+
     def get_summary(self):
+        humans = [a for a in self.actor_data.values() if not a.is_oni]
         return {
             "turn": self.turn,
-            "alive_in_field": len([a for a in self.actor_data.values() if a.alive and not a.escaped]),
-            "escaped": len([a for a in self.actor_data.values() if a.escaped]),
-            "dead": len([a for a in self.actor_data.values() if not a.is_oni and not a.alive]),
+            "alive_in_field": len([h for h in humans if h.alive and not h.escaped]),
+            "escaped": len([h for h in humans if h.escaped]),
+            "dead": len([h for h in humans if not h.alive]),
+            "exit_open": self.exit_open,
+            "identified_keys": sum(getattr(h, "keys_identified", 0) for h in humans),
             "terminal": self.is_terminal,
-            "reason": self.termination_reason
+            "reason": self.termination_reason,
         }
